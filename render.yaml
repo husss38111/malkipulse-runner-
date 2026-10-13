@@ -1,0 +1,19 @@
+services:
+  - type: worker
+    name: malkipulse-quotemedia-uat
+    runtime: node
+    repo: https://github.com/husss38111/malkipulse-runner-
+    branch: main
+    region: oregon
+    plan: starter
+    numInstances: 1
+    buildCommand: node --check quotemedia-stream-runner.mjs
+    startCommand: node quotemedia-stream-runner.mjs
+    maxShutdownDelaySeconds: 30
+    envVars:
+      - key: NODE_VERSION
+        value: 22.16.0
+      - key: MALKIPULSE_ORIGIN
+        value: https://malkipulse.com
+      - key: QM_STREAM_RUNNER_KEY
+        sync: false
