@@ -1,6 +1,7 @@
 import {pathToFileURL} from 'node:url';
 
 export const REQUEST_TIMEOUT_MS = 90_000;
+export const PROVIDER_REQUEST_TIMEOUT_MS = 180_000;
 const ERROR_MESSAGES = Object.freeze({
   CONFIGURATION: 'Configure a valid HTTPS origin and scheduler secret.',
   REQUEST_TIMEOUT: 'Background request exceeded its time budget.',
@@ -90,12 +91,12 @@ export async function runOnce({
     throw new RunnerError('CONFIGURATION', {stage: 'configuration'});
   }
 
-  if (work && !['scan', 'maintenance', 'delivery'].includes(work)) throw new RunnerError('CONFIGURATION', {stage: 'configuration'});
+  if (work && !['scan', 'maintenance', 'delivery', 'provider'].includes(work)) throw new RunnerError('CONFIGURATION', {stage: 'configuration'});
   if (work) url.searchParams.set('work', work);
 
   const started = performance.now();
   const elapsedMs = () => Math.max(0, Math.round(performance.now() - started));
-  const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const signal = AbortSignal.timeout(work === 'provider' ? PROVIDER_REQUEST_TIMEOUT_MS : REQUEST_TIMEOUT_MS);
   let response;
   try {
 
@@ -127,8 +128,13 @@ export async function runOnce({
     throw new RunnerError('TELEGRAM_FAILURE', {stage: 'validation', httpStatus: response.status, elapsedMs: elapsedMs()});
   }
 
-  if ((work === 'maintenance' && result.maintenanceOnly !== true) || (work === 'delivery' && result.deliveryOnly !== true)) {
+  if ((work === 'maintenance' && result.maintenanceOnly !== true) || (work === 'delivery' && result.deliveryOnly !== true) || (work === 'provider' && result.providerOnly !== true)) {
     throw new RunnerError('INVALID_RESULT', {stage: 'validation', elapsedMs: elapsedMs()});
+  }
+  if (work === 'provider') {
+    if (!validCount(result.received)) throw new RunnerError('INVALID_RESULT', {stage: 'validation', elapsedMs: elapsedMs()});
+    return {technicalSuccess: true, scanCompleted: false, status: result.status, received: result.received ?? 0,
+      enrichmentDeferred: result.enrichmentDeferred === true, elapsedMs: elapsedMs()};
   }
   if (work === 'maintenance' || work === 'delivery') {
     const states = new Set(['active','partial','source-error','cooldown','running','refreshing','disabled','unavailable','waiting','stale']);
@@ -163,7 +169,7 @@ export async function runOnce({
 // All lanes start together and every started request is awaited, including on
 // failure. Never retry an ambiguous timed-out POST or report it as completion.
 export async function runScheduledCycle(options = {}) {
-  const work = ['scan', 'maintenance', 'delivery'];
+  const work = ['scan', 'maintenance', 'delivery', 'provider'];
   const results = await Promise.allSettled(work.map(phase => runOnce({...options, work: phase})));
   const phases = Object.fromEntries(results.map((result, index) => [work[index],
     result.status === 'fulfilled' ? result.value : safeFailure(result.reason)]));
