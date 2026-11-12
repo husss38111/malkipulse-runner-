@@ -10,7 +10,6 @@ const ERROR_MESSAGES = Object.freeze({
   HTTP_ERROR: 'Background endpoint returned an unsuccessful HTTP status.',
   INVALID_JSON: 'Background endpoint returned invalid JSON.',
   INVALID_RESULT: 'Background scan returned an invalid or unsuccessful result.',
-  TELEGRAM_FAILURE: 'Telegram has failed deliveries; inspect the owner dashboard.',
   UNEXPECTED_ERROR: 'Background runner failed unexpectedly.'
 });
 
@@ -63,10 +62,7 @@ function validSummary(result) {
   // future API contract change must be reviewed, never copied into logs.
   return (result.runId == null || (typeof result.runId === 'string' && /^run-\d{13}-[a-f0-9]{8}$/.test(result.runId)))
     && ['candidateCount', 'exceptionalCount', 'newCount'].every(field => validCount(result[field]))
-    && validCount(result.retryAfter?.pending)
-    && validCount(result.retryAfter?.sent)
-    && validTimestamp(result.completedAt)
-    && (result.telegramSent == null || typeof result.telegramSent === 'boolean');
+    && validTimestamp(result.completedAt);
 }
 
 const SUPPRESSION_REASONS = new Set([
@@ -82,7 +78,7 @@ export async function runOnce({
   origin = process.env.MALKIPULSE_ORIGIN || 'https://malkipulse.com',
   key = process.env.BACKGROUND_RUNNER_KEY,
   fetchImpl = fetch,
-  work = null
+  work = 'scan'
 } = {}) {
   let url;
   try { url = new URL('/api/background-run', origin); }
@@ -91,8 +87,8 @@ export async function runOnce({
     throw new RunnerError('CONFIGURATION', {stage: 'configuration'});
   }
 
-  if (work && !['scan', 'maintenance', 'delivery', 'provider'].includes(work)) throw new RunnerError('CONFIGURATION', {stage: 'configuration'});
-  if (work) url.searchParams.set('work', work);
+  if (!['scan', 'maintenance', 'provider'].includes(work)) throw new RunnerError('CONFIGURATION', {stage: 'configuration'});
+  url.searchParams.set('work', work);
 
   const started = performance.now();
   const elapsedMs = () => Math.max(0, Math.round(performance.now() - started));
@@ -124,11 +120,7 @@ export async function runOnce({
   if (!result || typeof result !== 'object' || Array.isArray(result) || result.ok !== true || !['success', 'completed', 'suppressed'].includes(result.status) || !validSummary(result)) {
     throw new RunnerError('INVALID_RESULT', {stage: 'validation', httpStatus: response.status, elapsedMs: elapsedMs()});
   }
-  if (result.telegramError || result.retryBefore?.failed || result.retryAfter?.failed) {
-    throw new RunnerError('TELEGRAM_FAILURE', {stage: 'validation', httpStatus: response.status, elapsedMs: elapsedMs()});
-  }
-
-  if ((work === 'maintenance' && result.maintenanceOnly !== true) || (work === 'delivery' && result.deliveryOnly !== true) || (work === 'provider' && result.providerOnly !== true)) {
+  if ((work === 'maintenance' && result.maintenanceOnly !== true) || (work === 'provider' && result.providerOnly !== true)) {
     throw new RunnerError('INVALID_RESULT', {stage: 'validation', elapsedMs: elapsedMs()});
   }
   if (work === 'provider') {
@@ -136,14 +128,12 @@ export async function runOnce({
     return {technicalSuccess: true, scanCompleted: false, status: result.status, received: result.received ?? 0,
       enrichmentDeferred: result.enrichmentDeferred === true, elapsedMs: elapsedMs()};
   }
-  if (work === 'maintenance' || work === 'delivery') {
+  if (work === 'maintenance') {
     const states = new Set(['active','partial','source-error','cooldown','running','refreshing','disabled','unavailable','waiting','stale']);
     return {technicalSuccess: true, scanCompleted: false, elapsedMs: elapsedMs(),
-      ...(work === 'maintenance' ? {
-        secState: states.has(result.secFeed?.state) ? result.secFeed.state : 'unknown',
-        acquisitionState: states.has(result.acquisitions?.state) ? result.acquisitions.state : 'unknown',
-        monitorAvailable: result.maintenance?.available === true
-      } : {sent: result.retryAfter?.sent ?? 0, pending: result.retryAfter?.pending ?? 0})};
+      secState: states.has(result.secFeed?.state) ? result.secFeed.state : 'unknown',
+      acquisitionState: states.has(result.acquisitions?.state) ? result.acquisitions.state : 'unknown',
+      monitorAvailable: result.maintenance?.available === true};
   }
   const code = result.suppressionReason || result.feedDiagnostics?.suppressionReason;
   const suppressionReason = result.status === 'suppressed'
@@ -160,16 +150,14 @@ export async function runOnce({
     candidateCount: result.candidateCount ?? null,
     exceptionalCount: result.exceptionalCount ?? null,
     newCount: result.newCount ?? null,
-    telegramSent: Boolean(result.telegramSent),
-    completedAt: result.completedAt || null,
-    pending: result.retryAfter?.pending ?? 0
+    completedAt: result.completedAt || null
   };
 }
 
 // All lanes start together and every started request is awaited, including on
 // failure. Never retry an ambiguous timed-out POST or report it as completion.
 export async function runScheduledCycle(options = {}) {
-  const work = ['scan', 'maintenance', 'delivery', 'provider'];
+  const work = ['scan', 'maintenance', 'provider'];
   const results = await Promise.allSettled(work.map(phase => runOnce({...options, work: phase})));
   const phases = Object.fromEntries(results.map((result, index) => [work[index],
     result.status === 'fulfilled' ? result.value : safeFailure(result.reason)]));
@@ -187,3 +175,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.exitCode = 1;
   }
 }
+
