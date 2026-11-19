@@ -18,7 +18,9 @@ export class StompParser{
 }
 export function sampleData(m,now=Date.now()){
  const keys=Object.keys(m),lower=Object.fromEntries(keys.map(k=>[k.replace(/[^a-z0-9]/ig,'').toLowerCase(),m[k]]));
- const number=(...ks)=>{for(const k of ks){const v=lower[k];if(v!==undefined&&v!==null&&v!==''&&Number.isFinite(Number(v)))return Number(v)}return null};
+ // Accept numeric primitives and non-empty decimal strings only. Number()
+ // alone coerces whitespace, booleans and arrays into plausible market data.
+ const number=(...ks)=>{for(const k of ks){const v=lower[k];if(typeof v!=='number'&&typeof v!=='string')continue;if(typeof v==='string'&&!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(v.trim()))continue;const n=Number(v);if(Number.isFinite(n))return n}return null};
  const rawTime=lower.lasttradetime??lower.timestamp??lower.time;let providerTime=null;if(rawTime!==undefined){const n=Number(rawTime);if(Number.isFinite(n)&&n>1e9)providerTime=n<1e11?n*1000:n;else{const p=Date.parse(String(rawTime));if(Number.isFinite(p))providerTime=p}}
  return {type:m['@T'],receivedAt:now,symbol:lower.symbol??null,providerTime,price:number('last','price'),volume:number('accumulatedvolume','volume'),vwap:number('vwap'),fields:keys};
 }
