@@ -161,8 +161,11 @@ export async function runScheduledCycle(options = {}) {
   const results = await Promise.allSettled(work.map(phase => runOnce({...options, work: phase})));
   const phases = Object.fromEntries(results.map((result, index) => [work[index],
     result.status === 'fulfilled' ? result.value : safeFailure(result.reason)]));
-  return {status: results.every(result => result.status === 'fulfilled') ? 'completed' : 'failed',
-    technicalSuccess: results.every(result => result.status === 'fulfilled'), ...phases};
+  const technicalSuccess = results.every(result => result.status === 'fulfilled');
+  const scanCompleted = phases.scan.scanCompleted === true;
+  // Successful requests do not imply that the scanner had a usable feed.
+  return {status: !technicalSuccess ? 'failed' : scanCompleted ? 'completed' : 'suppressed',
+    technicalSuccess, scanCompleted, ...phases};
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
